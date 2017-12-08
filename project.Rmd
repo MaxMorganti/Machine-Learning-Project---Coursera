@@ -1,0 +1,177 @@
+---
+title: "Machine Learning Project - Coursera"
+author: "Max Morganti"
+date: "November 26, 2017"
+output: html_document
+---
+
+
+This project examines a human activity recognition dataset, where accelerometer sensors have measured the movements of subjects as they lifted weights in a variety of fashions. Class A corresponds to the correct execution of the Unilateral Dumbbell Biceps Curl exercise and classes B-E correspond to common mistakes. More information can be found [here][1]. The goal here is to attempt to identify and train a machine learning algorithm that can best discriminate between these activities.
+
+### 1. Loading and Cleaning Data
+
+First start by loading the data and necessary analysis packages into R. The training data consists of over 19,000 records, while the testing dataset contains only 20 and has no class labels. This testing data will be used as a holdout validation set and its predictions will be submitted to Coursera for a final measure of the model's performance on unseen data.
+
+
+```{r, warning = FALSE}
+
+if(!file.exists("./project_training.csv") | !file.exists("./project_testing.csv")) {
+    download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv', './project_training.csv')
+    download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv', './project_testing.csv')
+    
+    training <- read.csv('project_training.csv', na.strings = c('NA', ''))
+    validation <- read.csv('project_testing.csv', na.strings = c('NA', '')) 
+    
+} else {
+    training <- read.csv('project_training.csv', na.strings = c('NA', ''))
+    validation <- read.csv('project_testing.csv', na.strings = c('NA', ''))
+}
+
+library(caret)
+library(e1071)
+
+dim(training)
+dim(validation)
+
+```
+
+Next, when looking at the data it is apparent that there are a large number of NA values on certain variables. Calculating the NA percentage on each column shows that is either yields a result of 0% or 97.9%. It appears, then, that some sensors were only used for a small portion of the tests and, unfortunately, the amount of data returned is far too small to be useful, so these mostly unused variables are discarded. The first seven variables are also discarded, which are only indicator variables that give things like subject name, time of test, test number, etc.
+
+```{r}
+
+NA_df <- data.frame(vars = colnames(training), NA_pct = apply(training, 2, function(x) {mean(is.na(x))}))
+# shows how many variables have over 97% NA values
+length(NA_df[,1][NA_df$NA_pct > .97]) 
+
+# selects only variables with 0% NA's
+good_vars <- NA_df[which(NA_df[,2]==0),1] 
+# remove indicator variables
+good_vars <- good_vars[-c(1:7)] 
+
+training2 <- training[,as.character(good_vars)]
+validation2 <- validation[,c(as.character(good_vars)[-53],'problem_id')]
+
+# print remaining variables:
+good_vars
+
+```
+
+
+Next, the **training2** data is split into training (90%) and testing (10%) sets. This new testing set will be used to assess model performance. 
+
+```{r}
+set.seed(1111)
+inTrain = createDataPartition(training2$classe, p=.9)[[1]]
+my_training = training2[inTrain,]
+my_testing = training2[-inTrain,]
+
+```
+
+### 2. Initial Models
+
+Then, initial model selection begins by training and testing one of the most straightforward machine learning algorithms, a classification tree; this is done using the caret package's 'rpart' method. This only results in a disappointing classification accuracy of about 49%. There are 5 classes, so the model is still doing about 30% better than a classifier that would just randomly guess, but it is likely possible to do much better and the still relatively large number of variables may be hindering the performance here.
+
+```{r}
+#train classification tree model
+modelFit_rpart <- train(classe~., method = 'rpart', data = my_training)
+#predict on testing set using trained model
+predictions <- predict(modelFit_rpart, my_testing)
+#accuracy calculation
+mean(predictions == my_testing$classe) 
+
+```
+
+So what might be a more appropriate algorithm is tested next, an SVM, or Support Vector Machine. This method applies a 'kernel trick' (radial by default) and finds the optimum hyperplane that separates the classes. This might work well in this situation, as the large number of variables could keep the classes well-separated. A remarkable accuracy of almost 95% is returned, so this algorithm should be further explored with tuning and additional testing.
+
+```{r, cache = TRUE}
+#train svm
+modelFit_svm <- svm(classe~., data = my_training)
+#predict on testing set using trained model
+predictions <- predict(modelFit_svm, my_testing)
+#accuracy calculation
+svm_acc <- mean(predictions == my_testing$classe) 
+svm_acc
+
+```
+
+It is notable that gradient boosting and random forest methods were also tested during the exploratory phases of this project, however both took exceptionally long to run and returned only mediocre accuracy results that were much less than what the SVM produced. The concept of preprocessing with principal components analysis to reduce dimensionality and then re-applying previous algorithms was tried, and it did improve performance (notably on classification trees), but the performance still did not exceed that of SVM and it was decided to move forward with the simpler model.
+
+### 3. Further Testing and Model Tuning
+
+Firstly, 10-fold cross validation on the whole **training2** dataset is now used to test the SVM on a variety of data-slices to ensure the previous results were not abnormal. The model summary verifies that the accuracy is 95.2% on average and it can be seen that the single test accuracies are closely distributed; tuning can proceed.
+
+
+```{r, cache=TRUE}
+set.seed(1111)
+modelFit_svm_cross <- svm(classe~., data= training2, cross = 10)
+summary(modelFit_svm_cross)
+
+```
+
+The aforementioned kernel trick applies a transformation to the data to cast it into higher dimensions and more easily separate the distinct classes. There are a number of available kernels and the performance of each is compared to the default radial kernal. The polynomial kernel notably performs about as well as the radial, while the radial and sigmoid have significantly worse accuracy. The polynomial case may be worth exploring in a more detailed analysis, but again here the simpler radial model is accepted, as the polynomial case would have additional coefficient tuning parameters.
+
+
+```{r, cache = TRUE}
+
+svm_lin <- svm(classe~., data = my_training, kernel = 'linear')
+lin_predictions <- predict(svm_lin, my_testing)
+lin_acc <- mean(lin_predictions == my_testing$classe) 
+
+svm_poly <- svm(classe~., data = my_training, kernel = 'polynomial')
+poly_predictions <- predict(svm_poly, my_testing)
+poly_acc <- mean(poly_predictions == my_testing$classe) 
+
+
+svm_sig <- svm(classe~., data = my_training, kernel = 'sigmoid')
+sig_predictions <- predict(svm_sig, my_testing)
+sig_acc <- mean(sig_predictions == my_testing$classe) 
+
+accs <- c(radial = svm_acc, linear = lin_acc, polynomial = poly_acc, sigmoid = sig_acc)
+barplot(accs, main = 'SVM Accuracy by Kernel Type')
+
+```
+
+Finally, the cost parameter **C** is optimized. This is effectively the strength of the penalty that is applied to misclassified points when the separating hyperplane is drawn; a larger C value will increase accuracy, but make the model more susceptible to overfitting. C values over a variety of magnitudes were applied to the SVM and 5-fold cross validation was used for each to ensure the models were not overfitted to any particular training data slice.
+
+
+
+```{r, cache = TRUE}
+C_vals <- 10^(-2:4)
+cost_acc <- c()
+for(i in 1:length(C_vals)) {
+    cost_test <- svm(classe~., data = training2, kernel = 'radial', cost = C_vals[i], cross = 5)
+    new_acc <- mean(cost_test$accuracies)
+    cost_acc <- c(cost_acc, new_acc)
+}
+
+plot(log10(C_vals), cost_acc, main = 'Cost Parameter Effect on Accuracy', xlab = 'log10(C)')
+
+```
+
+```{r}
+#numerical values of accuracy for each cost
+data.frame(C_vals,cost_acc)
+```
+
+The above graph demonstrates that raising **C** to 100 from its default value of 1 increases accuracy up to approximately 99.5%, but after this there are diminishing returns from increasing the cost further. This level of accuracy is quite promising and is more than sufficient for purposes of this project. The final model will be trained on all **training2** data and applied to the validation set. 
+
+```{r, cache = TRUE}
+
+model_Final <- svm(classe~., data = training2, kernel = 'radial', cost = 100)
+predict_Final <- predict(model_Final, validation2)
+predict_Final
+
+```
+
+These validation set predictions were reported by Coursera to have 100% accuracy to their true class values.
+
+[1]: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+
+
+
+
+
+
+
+
+
